@@ -43,7 +43,7 @@ A first-person free fall built to match the NASA/Goddard plunge visualization an
 - futuristic **spacesuit HUD**: mission clock, pulse, O₂, suit integrity, tidal g-force and comms signal that honestly dies at the horizon 📡;
 - breathing, fear, alarm, signal-loss and system-failure **sound design**; time speed from ×0.125 to ×1,000,000 (you'll need it for Phoenix A — a 23-year fall!);
 - look-around: mouse, swipe, or gyroscope on phones;
-- 🥽 **real VR via WebXR** (Quest 2/3/3S): stereo rendering of the full raymarched pipeline, head tracking, Touch controllers — right stick orbits, left stick zooms, trigger spawns a star, squeeze starts the plunge.
+- 🥽 **real VR via WebXR** (Quest 2/3/3S): stereo rendering of the full raymarched pipeline, head tracking, Touch controllers — right stick orbits, left stick zooms, trigger spawns a star, squeeze starts the plunge. Standalone headsets get a lightweight profile with dynamic resolution; for full quality run it on a PC browser via Quest Link / Air Link — the desktop GPU renders and streams to the headset.
 
 ### 🎨 Graphics
 
@@ -106,7 +106,7 @@ The physics was verified against published sources — see [`research/blackhole-
 - футуристичный **HUD скафандра**: часы миссии, пульс, O₂, целостность, приливные перегрузки и связь, которая честно умирает на горизонте 📡;
 - дыхание, страх, сирена, потеря сигнала и отказ систем — **звуковой дизайн**; скорость времени от ×0.125 до ×1 000 000 (пригодится для Феникса A — падение длиной 23 года!);
 - осмотр: мышь, свайп или гироскоп на телефоне;
-- 🥽 **настоящий VR через WebXR** (Quest 2/3/3S): стерео-рендер всего рейтрейс-конвейера, трекинг головы, контроллеры Touch — правый стик крутит орбиту, левый зумит, курок спавнит звезду, squeeze запускает погружение.
+- 🥽 **настоящий VR через WebXR** (Quest 2/3/3S): стерео-рендер всего рейтрейс-конвейера, трекинг головы, контроллеры Touch — правый стик крутит орбиту, левый зумит, курок спавнит звезду, squeeze запускает погружение. Автономный шлем получает облегчённый профиль с динамическим разрешением; за полным качеством запускайте в браузере ПК через Quest Link / Air Link — рендерит видеокарта компьютера.
 
 ### 🎨 Графика
 

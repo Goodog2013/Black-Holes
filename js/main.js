@@ -2193,9 +2193,21 @@ function render(t) {
 // ============================================================
 // WebXR: стерео-рендер для VR-шлемов (Quest 2/3/3S, Meta Quest Browser)
 // ============================================================
-// Качество под мобильный GPU шлема: ~40 шагов геодезики в стерео при 72 Гц.
-// scale здесь — доля от рекомендованного разрешения глаза (композит растянет).
-const XR_QUALITY = { steps: 40, scale: 0.75, blur: 1 };
+// Профили VR-качества.
+// Автономный шлем (Adreno в Quest) не тянет рейтрейсинг — минимум шагов,
+// а разрешение глаза подстраивается на лету (xrPerf). Через Link/SteamVR
+// рендерит GPU ПК — берём текущий пресет пользователя (1–8 работают и в VR).
+const XR_MOBILE = { steps: 28, blur: 1 };
+// адаптивное разрешение: ema — сглаженное время кадра (мс), hold — пауза между шагами
+const xrPerf = { scale: 0.5, min: 0.3, max: 0.85, ema: 13, last: 0, hold: 0 };
+
+function xrMobileGPU() {
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const r = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    return /adreno|mali|powervr|qualcomm|snapdragon|xclipse|immortalis/i.test(r);
+  } catch (e) { return false; }
+}
 
 async function enterVR() {
   if (xr.session) { xr.session.end(); return; }
@@ -2205,14 +2217,27 @@ async function enterVR() {
       optionalFeatures: ['local-floor'],
     });
     await gl.makeXRCompatible();
-    xr.layer = new XRWebGLLayer(session, gl, { antialias: false });
+    const mobile = xrMobileGPU();
+    xr.layer = new XRWebGLLayer(session, gl, {
+      antialias: false,
+      framebufferScaleFactor: mobile ? 0.85 : 1.0,
+    });
     // фовеация: Quest сильно экономит на периферии кадра
     if ('fixedFoveation' in xr.layer) xr.layer.fixedFoveation = 1;
     session.updateRenderState({ baseLayer: xr.layer });
     xr.refSpace = await session.requestReferenceSpace('local');
     xr.session = session;
     xr.savedQ = quality;
-    quality = XR_QUALITY;
+    if (mobile) {
+      quality = XR_MOBILE;
+      xrPerf.scale = 0.5; xrPerf.min = 0.3; xrPerf.max = 0.85;
+    } else {
+      // ПК (Link/Air Link/SteamVR): шаги и bloom из пресета пользователя,
+      // масштаб глаза адаптивный в комфортных пределах
+      xrPerf.scale = Math.min(quality.scale || 1, 1);
+      xrPerf.min = 0.45; xrPerf.max = 1.0;
+    }
+    xrPerf.ema = 13; xrPerf.last = 0; xrPerf.hold = 0;
     const btn = document.getElementById('vr-btn');
     if (btn) btn.classList.add('active');
     session.addEventListener('end', () => {
@@ -2260,6 +2285,22 @@ function xrFrame(now, xrf) {
   gl.clear(gl.COLOR_BUFFER_BIT);
   const pose = xrf.getViewerPose(xr.refSpace);
   if (!pose) return;
+  // адаптивное разрешение: если кадр не влезает в такт дисплея — уменьшаем
+  // масштаб рендера глаза, если есть запас — понемногу возвращаем
+  if (xrPerf.last) {
+    const dtMs = Math.min(now - xrPerf.last, 100);
+    xrPerf.ema += (dtMs - xrPerf.ema) * 0.08;
+    if (--xrPerf.hold <= 0) {
+      if (xrPerf.ema > 16.5 && xrPerf.scale > xrPerf.min) {
+        xrPerf.scale = Math.max(xrPerf.min, xrPerf.scale - 0.06);
+        xrPerf.hold = 45;   // ~полсекунды на стабилизацию после шага вниз
+      } else if (xrPerf.ema < 12.2 && xrPerf.scale < xrPerf.max) {
+        xrPerf.scale = Math.min(xrPerf.max, xrPerf.scale + 0.03);
+        xrPerf.hold = 90;
+      }
+    }
+  }
+  xrPerf.last = now;
   const rig = cameraVectors(); // куда «смотрит» симулятор (орбита/полёт/погружение)
   const ws = xrWorldScale();
   const mainRT = RT;
@@ -2267,8 +2308,8 @@ function xrFrame(now, xrf) {
     const view = pose.views[i];
     const vp = layer.getViewport(view);
     if (!vp || !vp.width) continue;
-    const rw = Math.max(2, Math.round(vp.width * (quality.scale || 1)));
-    const rh = Math.max(2, Math.round(vp.height * (quality.scale || 1)));
+    const rw = Math.max(2, Math.round(vp.width * xrPerf.scale));
+    const rh = Math.max(2, Math.round(vp.height * xrPerf.scale));
     if (!xr.rt || xr.rt.scene.w !== rw || xr.rt.scene.h !== rh) {
       if (xr.rt) Object.values(xr.rt).forEach(destroyTarget);
       xr.rt = makeRTSet(rw, rh);
