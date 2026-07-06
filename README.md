@@ -14,7 +14,7 @@ WebGL2 · zero dependencies · works offline · EN/RU interface
 
 ## 🇬🇧 English
 
-An interactive 3D black hole simulator: real general-relativity visuals, a first-person plunge through the event horizon, tidal disruption of stars into GPU particle streams, black hole mergers with gravitational waves — all in vanilla JavaScript + WebGL2, no build step, no dependencies.
+An interactive 3D black hole simulator: real general-relativity visuals, a first-person plunge through the event horizon, tidal disruption of stars into GPU particle streams, black hole mergers with gravitational waves — all in vanilla JavaScript + WebGL2, no build step, no dependencies. Main focus on immersion mode.
 
 ### 🚀 Quick start
 
@@ -76,7 +76,7 @@ The physics was verified against published sources — see [`research/blackhole-
 
 ## 🇷🇺 Русский
 
-Интерактивный 3D-симулятор чёрной дыры: честная картинка общей теории относительности, падение сквозь горизонт от первого лица, приливное разрушение звёзд в потоки GPU-частиц, слияния чёрных дыр с гравитационными волнами — на чистом JavaScript + WebGL2, без сборки и зависимостей.
+Интерактивный 3D-симулятор чёрной дыры: честная картинка общей теории относительности, падение сквозь горизонт от первого лица, приливное разрушение звёзд в потоки GPU-частиц, слияния чёрных дыр с гравитационными волнами — на чистом JavaScript + WebGL2, без сборки и зависимостей. Основное внимание уделено режиму погружения.
 
 ### 🚀 Запуск
 
