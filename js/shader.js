@@ -110,10 +110,13 @@ vec3 starLayer(vec3 d, float scale, float bright, float sharp){
   float h = hash13(id);
   vec3 sp = vec3(hash13(id + 7.1), hash13(id + 13.7), hash13(id + 27.3)) - 0.5;
   float dist = length(f - sp * 0.85);
-  float star = exp(-dist * dist * sharp);
+  // VR: звёзды шире и мягче (суб-пиксельные точки мерцают при движении головы),
+  // без временно́го твинкла; яркость гасим — широкая гауссиана светит суммарно ярче
+  float sh = uXR > 0 ? sharp * 0.30 : sharp;
+  float star = exp(-dist * dist * sh) * (uXR > 0 ? 0.5 : 1.);
   // реалистичные цвета звёзд — спектр чёрного тела
   float temp = mix(2600., 14000., pow(max(hash13(id + 3.3), 0.001), 1.6));
-  float tw = 0.85 + 0.15 * sin(uTime * (0.6 + h * 3.) + h * 40.);
+  float tw = uXR > 0 ? 1. : 0.85 + 0.15 * sin(uTime * (0.6 + h * 3.) + h * 40.);
   return blackbody(temp) * star * bright * tw * pow(max(h, 0.001), 24.);
 }
 
