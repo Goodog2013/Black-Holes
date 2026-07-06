@@ -1642,6 +1642,15 @@ function setupUI() {
   el('lang-btn').onclick = () => setLang(LANG === 'ru' ? 'en' : 'ru');
   applyStaticLang();
 
+  // мобильная раскладка: секции настроек свёрнуты (панель — нижний лист),
+  // карточка физики сворачивается тапом по заголовку и стартует свёрнутой
+  if (window.matchMedia('(max-width: 760px)').matches) {
+    document.querySelectorAll('#ui-left details[open]').forEach(d => d.removeAttribute('open'));
+    const info = el('ui-info');
+    info.classList.add('collapsed');
+    info.querySelector('h2').addEventListener('click', () => info.classList.toggle('collapsed'));
+  }
+
   // автосохранение настроек при любом взаимодействии с панелью
   const uiRoot = document.getElementById('ui-left');
   uiRoot.addEventListener('input', scheduleSave);
