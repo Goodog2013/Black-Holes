@@ -136,6 +136,7 @@ let RT = null;
 
 // ---- состояние WebXR (VR-шлем): заполняется в xrFrame ----
 const xr = { session: null, refSpace: null, layer: null, rt: null, savedQ: null, btn: {} };
+let xrSupported = false; // immersive-vr доступен (обновляется при devicechange)
 let xrCam = null;                     // базис глаза на время рендера (подменяет камеру)
 let xrTan = [0, 0, 0, 0];             // тангенсы фрустума глаза (left, right, bottom, top)
 let xrEye = 0;                        // 0 — левый глаз (шагает симуляции), 1 — правый
@@ -1759,13 +1760,21 @@ function setupUI() {
   el('lang-btn').onclick = () => setLang(LANG === 'ru' ? 'en' : 'ru');
   applyStaticLang();
 
-  // VR (WebXR): кнопка появляется, только если шлем действительно доступен
+  // VR (WebXR): кнопка видна, если браузер вообще умеет WebXR; если шлем
+  // не обнаружен — по клику показываем чек-лист настройки (Link/OpenXR)
   if (navigator.xr && navigator.xr.isSessionSupported) {
-    navigator.xr.isSessionSupported('immersive-vr').then(ok => {
-      if (ok) el('vr-btn').style.display = '';
-    }).catch(() => {});
+    el('vr-btn').style.display = '';
+    const probeVR = () => navigator.xr.isSessionSupported('immersive-vr')
+      .then(ok => { xrSupported = ok; el('vr-btn').style.opacity = ok ? '' : '0.4'; })
+      .catch(() => { xrSupported = false; });
+    probeVR();
+    // рантайм мог появиться позже (запустили Link после открытия вкладки)
+    if (navigator.xr.addEventListener) navigator.xr.addEventListener('devicechange', probeVR);
+    el('vr-btn').onclick = () => {
+      if (xrSupported) enterVR();
+      else probeVR().then(() => xrSupported ? enterVR() : alert(T('vrNoRuntime')));
+    };
   }
-  el('vr-btn').onclick = enterVR;
 
   // мобильная раскладка: секции настроек свёрнуты (панель — нижний лист),
   // карточка физики сворачивается тапом по заголовку и стартует свёрнутой
@@ -2347,6 +2356,7 @@ async function enterVR() {
     session.requestAnimationFrame(xrFrame);
   } catch (err) {
     console.warn('WebXR: VR-сессия не запустилась', err);
+    alert(T('vrFail') + '\n\n' + (err && err.message ? err.message : err));
   }
 }
 
