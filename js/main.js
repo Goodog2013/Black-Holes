@@ -2340,14 +2340,43 @@ function xrMobileGPU() {
   } catch (e) { return false; }
 }
 
+let xrPending = false; // защита от повторного клика, пока сессия запускается
 async function enterVR() {
   if (xr.session) { xr.session.end(); return; }
-  if (!navigator.xr) return;
+  if (!navigator.xr || xrPending) return;
+  xrPending = true;
   initSndPool(); // прогрев аудио в рамках клика — в VR жестов уже не будет
+  let session = null;
   try {
-    const session = await navigator.xr.requestSession('immersive-vr', {
+    session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['local-floor'],
     });
+  } catch (err) {
+    xrPending = false;
+    console.warn('WebXR: VR-сессия не запустилась', err);
+    alert(T('vrFail') + '\n\n' + (err && err.message ? err.message : err));
+    return;
+  }
+  // сессию фиксируем сразу: повторный клик теперь корректно завершит её,
+  // а не наткнётся на «There is already an active, immersive XRSession»
+  xr.session = session;
+  xr.savedQ = quality;
+  const btn = document.getElementById('vr-btn');
+  session.addEventListener('end', () => {
+    xr.session = null;
+    xrPending = false;
+    if (xr.rt) { Object.values(xr.rt).forEach(destroyTarget); xr.rt = null; }
+    xrCam = null; xrEye = 0;
+    xrOut.fb = null; xrOut.vp = null;
+    vrUi.on = false; vrUi.toggleReq = false;
+    vrUi.hover = null; vrUi.ray = null; vrUi.cursor = null;
+    if (xr.savedQ) quality = xr.savedQ;
+    if (btn) btn.classList.remove('active');
+    resize();
+    lastT = performance.now();
+    requestAnimationFrame(frame); // возвращаем обычный цикл кадров
+  });
+  try {
     await gl.makeXRCompatible();
     const mobile = xrMobileGPU();
     xr.layer = new XRWebGLLayer(session, gl, {
@@ -2358,8 +2387,6 @@ async function enterVR() {
     if ('fixedFoveation' in xr.layer) xr.layer.fixedFoveation = 1;
     session.updateRenderState({ baseLayer: xr.layer });
     xr.refSpace = await session.requestReferenceSpace('local');
-    xr.session = session;
-    xr.savedQ = quality;
     if (mobile) {
       quality = XR_MOBILE;
       xrPerf.scale = 0.5; xrPerf.min = 0.3; xrPerf.max = 0.85;
@@ -2370,25 +2397,16 @@ async function enterVR() {
       xrPerf.min = 0.45; xrPerf.max = 1.0;
     }
     xrPerf.ema = 13; xrPerf.last = 0; xrPerf.hold = 0;
-    const btn = document.getElementById('vr-btn');
     if (btn) btn.classList.add('active');
-    session.addEventListener('end', () => {
-      xr.session = null;
-      if (xr.rt) { Object.values(xr.rt).forEach(destroyTarget); xr.rt = null; }
-      xrCam = null; xrEye = 0;
-      xrOut.fb = null; xrOut.vp = null;
-      vrUi.on = false; vrUi.toggleReq = false;
-      vrUi.hover = null; vrUi.ray = null; vrUi.cursor = null;
-      if (xr.savedQ) quality = xr.savedQ;
-      if (btn) btn.classList.remove('active');
-      resize();
-      lastT = performance.now();
-      requestAnimationFrame(frame); // возвращаем обычный цикл кадров
-    });
+    xrPending = false;
     session.requestAnimationFrame(xrFrame);
   } catch (err) {
-    console.warn('WebXR: VR-сессия не запустилась', err);
+    // настройка не удалась — обязательно закрываем сессию, иначе она
+    // останется висеть активной и заблокирует все следующие запуски
+    console.warn('WebXR: ошибка настройки VR-сессии', err);
     alert(T('vrFail') + '\n\n' + (err && err.message ? err.message : err));
+    xrPending = false;
+    try { session.end(); } catch (e) {}
   }
 }
 
