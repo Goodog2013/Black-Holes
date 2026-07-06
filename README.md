@@ -6,6 +6,8 @@
 
 WebGL2 · zero dependencies · works offline · EN/RU interface
 
+### 🌐 [**Live demo → goodog2013.github.io/Black-Holes**](https://goodog2013.github.io/Black-Holes/)
+
 [🇬🇧 English](#-english) · [🇷🇺 Русский](#-русский) · [MIT License](LICENSE)
 
 </div>
@@ -18,7 +20,7 @@ An interactive 3D black hole simulator: real general-relativity visuals, a first
 
 ### 🚀 Quick start
 
-Open `index.html` in a modern browser (Chrome / Edge / Firefox). That's it — everything runs locally.
+**Just open the [live demo](https://goodog2013.github.io/Black-Holes/)** — or clone the repo and open `index.html` in a modern browser (Chrome / Edge / Firefox). No build, no install, everything runs locally.
 
 ### 🔭 Physics
 
@@ -80,7 +82,7 @@ The physics was verified against published sources — see [`research/blackhole-
 
 ### 🚀 Запуск
 
-Откройте `index.html` в современном браузере (Chrome / Edge / Firefox). Всё. Работает офлайн.
+**Просто откройте [живую демку](https://goodog2013.github.io/Black-Holes/)** — или склонируйте репозиторий и откройте `index.html` в современном браузере (Chrome / Edge / Firefox). Без сборки и установки, работает офлайн.
 
 ### 🔭 Физика
 
