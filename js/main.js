@@ -752,6 +752,7 @@ function stepImmersion(dt) {
 
 // ---- попап запуска погружения ----
 function openImmModal() {
+  initSndPool(); // клик по кнопке — удобный момент разблокировать аудио
   document.getElementById('imm-modal').classList.remove('hidden');
   updateImmEta();
 }
@@ -847,32 +848,49 @@ window.addEventListener('deviceorientation', e => {
 });
 
 // ---- звуки погружения: дыхание в шлеме (цикл) и страх у горизонта ----
+// Пул элементов создаётся и «прогревается» заранее по настоящему клику
+// (кнопка VR или погружения): ввод XR-контроллера не считается жестом
+// пользователя, и без прогрева autoplay-политика может молча глушить play().
 const FEAR_LEN = 30; // длина fear.mp3, сек
+const SND_FILES = {
+  breath: 'breath.mp3', fear: 'fear.mp3', alarm: 'Alarm.mp3',
+  signalLost: 'signal_lost.mp3', failure: 'Failure.wav',
+};
+let sndPool = null;
 let immSnd = null;
+function initSndPool() {
+  if (sndPool) return;
+  sndPool = {};
+  for (const k in SND_FILES) {
+    const a = new Audio(SND_FILES[k]);
+    a.preload = 'auto';
+    a.volume = 0;
+    a.play().then(() => { a.pause(); a.currentTime = 0; }).catch(() => {});
+    sndPool[k] = a;
+  }
+}
+function poolPlay(key, vol, loop) {
+  initSndPool();
+  const a = sndPool[key];
+  a.volume = vol;
+  a.loop = !!loop;
+  try { a.currentTime = 0; } catch (e) {}
+  a.play().catch(() => {});
+  return a;
+}
 function startBreathing() {
-  const breath = new Audio('breath.mp3');
-  breath.loop = true;
-  breath.volume = 0.85;
-  breath.play().catch(() => {});
-  immSnd = { breath, fear: null, fearStarted: false };
+  immSnd = { breath: poolPlay('breath', 0.85, true), fear: null, fearStarted: false };
 }
 function playFear() {
   if (!immSnd || immSnd.fearStarted) return;
   immSnd.fearStarted = true;
-  const fear = new Audio('fear.mp3');
-  fear.volume = 1.0;
-  fear.play().catch(() => {});
-  immSnd.fear = fear;
+  immSnd.fear = poolPlay('fear', 1.0, false);
   // дыхание приглушаем, чтобы страх читался
   immSnd.breath.volume = 0.4;
 }
 function playExtra(key, file, vol, loop) {
   if (!immSnd || immSnd[key]) return;
-  const a = new Audio(file);
-  a.volume = vol;
-  a.loop = loop;
-  a.play().catch(() => {});
-  immSnd[key] = a;
+  immSnd[key] = poolPlay(key, vol, loop);
 }
 function stopBreathing() {
   if (!immSnd) return;
@@ -1741,8 +1759,21 @@ function setupUI() {
     extraSndOn = e.target.checked;
     try { localStorage.setItem('bh-extrasnd', extraSndOn ? '1' : '0'); } catch (err) {}
   };
-  el('imm-dist').oninput = updateImmEta;
-  el('imm-speed').onchange = updateImmEta;
+  // дальность и скорость погружения живут в localStorage: их читает
+  // и старт из модалки, и squeeze/меню в VR — настройки всегда совпадают
+  try {
+    const sd = localStorage.getItem('bh-immdist'), ss = localStorage.getItem('bh-immspeed');
+    if (sd !== null) el('imm-dist').value = sd;
+    if (ss !== null && [...el('imm-speed').options].some(o => o.value === ss)) el('imm-speed').value = ss;
+  } catch (e) {}
+  el('imm-dist').oninput = () => {
+    try { localStorage.setItem('bh-immdist', el('imm-dist').value); } catch (e) {}
+    updateImmEta();
+  };
+  el('imm-speed').onchange = () => {
+    try { localStorage.setItem('bh-immspeed', el('imm-speed').value); } catch (e) {}
+    updateImmEta();
+  };
   el('imm-start').onclick = () => {
     el('imm-modal').classList.add('hidden');
     startImmersion(+el('imm-dist').value, +el('imm-speed').value);
@@ -2312,6 +2343,7 @@ function xrMobileGPU() {
 async function enterVR() {
   if (xr.session) { xr.session.end(); return; }
   if (!navigator.xr) return;
+  initSndPool(); // прогрев аудио в рамках клика — в VR жестов уже не будет
   try {
     const session = await navigator.xr.requestSession('immersive-vr', {
       optionalFeatures: ['local-floor'],
@@ -2538,8 +2570,8 @@ function xrHaptics() {
 // VR-меню (панель перед взглядом, X — показать/скрыть), луч-указатель
 // правого контроллера и head-locked HUD скафандра в погружении
 // ============================================================
-const VRUI_W = 512, VRUI_H = 704;   // канвас панели меню
-const VRHUD_W = 512, VRHUD_H = 224; // канвас HUD погружения
+const VRUI_W = 512, VRUI_H = 704;    // канвас панели меню
+const VRHUD_W = 1024, VRHUD_H = 640; // канвас HUD погружения (весь визор)
 const vrUi = {
   on: false, toggleReq: false,
   pos: null, xAx: null, yAx: null, nrm: null, // панель в refSpace (метры)
@@ -2757,7 +2789,8 @@ function vrUpdatePointer(session, xrf) {
   if ((prevHover && prevHover.id) !== (vrUi.hover && vrUi.hover.id)) vrUi.dirty = true;
 }
 
-// HUD погружения: телеметрия скафандра на полупрозрачной плашке ниже взгляда
+// HUD погружения в VR — копия визора с ПК: угловые блоки телеметрии
+// с бортиками, прицел в центре и строка «r · v · отсчёт» внизу
 function vrDrawHud() {
   if (!vrUi.hudCanvas) {
     vrUi.hudCanvas = document.createElement('canvas');
@@ -2767,45 +2800,95 @@ function vrDrawHud() {
   const ctx = vrUi.hudCanvas.getContext('2d');
   const W = VRHUD_W, H = VRHUD_H;
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(6, 10, 18, 0.55)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = 'rgba(120, 210, 255, 0.4)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(1, 1, W - 2, H - 2);
-
   const s = suitTelemetry();
   const beta = Math.min(immBetaLocal(), 0.999);
-  const cyan = 'rgba(150, 220, 255, 0.9)', warn = 'rgba(255, 130, 80, 0.95)';
-  ctx.font = '600 34px Consolas, monospace';
-  ctx.fillStyle = cyan;
-  ctx.fillText(`r ${immersion.r.toFixed(2)} rs`, 24, 52);
-  ctx.fillText(`v ${(beta * 100).toFixed(0)}% c`, 270, 52);
+  const dim = 'rgba(140, 225, 255, 0.8)';   // подписи (как базовый цвет #suit-hud)
+  const val = 'rgba(220, 245, 255, 0.95)';  // значения (.val)
+  const warn = 'rgba(255, 130, 80, 0.95)';  // тревога (.warn)
+  const blinkOn = Math.floor(performance.now() / 450) % 2 === 0; // .blink
+  try { ctx.letterSpacing = '2px'; } catch (e) {}
+  ctx.shadowColor = 'rgba(50, 150, 230, 0.6)';
+  ctx.shadowBlur = 10;
+  ctx.font = '24px Consolas, "Courier New", monospace';
 
-  // отсчёт: до горизонта снаружи, до гибели внутри
-  ctx.font = '600 30px Consolas, monospace';
-  if (immersion.r > 1 && immersion.rSpag < 1) {
-    const tHor = immFallTime(immersion.r, 1) * rs1() / C / immersion.speed;
-    ctx.fillStyle = cyan;
-    ctx.fillText(TF('hudHorizon', { t: fmtTime(Math.max(tHor, 0)) }), 24, 104);
-  } else {
-    const tSpag = immFallTime(immersion.r, immersion.rSpag) * rs1() / C / immersion.speed;
-    ctx.fillStyle = warn;
-    const inside = immersion.r <= 1 ? T('hudInside') + ' · ' : '';
-    ctx.fillText(inside + TF('hudDoom', { t: fmtTime(Math.max(tSpag, 0)) }), 24, 104);
+  if (suitHudOn) {
+    const lineH = 42;
+    // строка «ПОДПИСЬ: значение»; blink прячет значение в такт
+    const row = (x, y, label, value, color, doBlink, alignR) => {
+      const lab = label.toUpperCase() + ': ';
+      const txt = doBlink && !blinkOn ? '' : value;
+      if (alignR) {
+        const w = ctx.measureText(lab + value).width;
+        ctx.fillStyle = dim;
+        ctx.fillText(lab, x - w, y);
+        ctx.fillStyle = color;
+        ctx.fillText(txt, x - w + ctx.measureText(lab).width, y);
+      } else {
+        ctx.fillStyle = dim;
+        ctx.fillText(lab, x, y);
+        ctx.fillStyle = color;
+        ctx.fillText(txt, x + ctx.measureText(lab).width, y);
+      }
+    };
+    // бортики блоков — как border-left/right у .sh-corner
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(120, 210, 255, 0.45)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(56, 66); ctx.lineTo(56, 66 + lineH * 3);
+    ctx.moveTo(W - 56, 66); ctx.lineTo(W - 56, 66 + lineH * 3);
+    ctx.stroke();
+    ctx.shadowBlur = 10;
+    // левый блок: время миссии, пульс, кислород
+    row(74, 104, T('sTau'), s.tauStr, val);
+    row(74, 104 + lineH, T('sPulse'), `${s.pulse} bpm`, s.pulse > 150 ? warn : val);
+    row(74, 104 + lineH * 2, T('sO2'), `${s.o2}%`, +s.o2 < 25 ? warn : val, +s.o2 < 25);
+    // правый блок: связь, целостность, прилив
+    if (s.sig > 0) {
+      row(W - 74, 104, T('sSignal'), `${s.sig.toFixed(0)}%`, s.sig < 35 ? warn : val, false, true);
+    } else if (blinkOn) {
+      ctx.fillStyle = warn;
+      const t = T('sNoSignal');
+      ctx.fillText(t, W - 74 - ctx.measureText(t).width, 104);
+    }
+    row(W - 74, 104 + lineH, T('sIntegr'), `${s.integ.toFixed(0)}%`, s.integ < 70 ? warn : val, s.integ < 70, true);
+    row(W - 74, 104 + lineH * 2, T('sTidal'), `${s.fmtG} g`, s.tidalG > 1 ? warn : val, false, true);
+    // прицел в центре (как .sh-crosshair)
+    ctx.shadowBlur = 0;
+    const cx = W / 2, cy = H * 0.47, cr = 34;
+    ctx.strokeStyle = 'rgba(120, 210, 255, 0.22)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(120, 210, 255, 0.3)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - cr - 8); ctx.lineTo(cx, cy - cr + 2);
+    ctx.moveTo(cx, cy + cr - 2); ctx.lineTo(cx, cy + cr + 8);
+    ctx.stroke();
+    ctx.shadowBlur = 10;
   }
 
-  // текстовые метки вместо эмодзи: канвас в Quest Browser может не иметь эмодзи-шрифта
-  ctx.font = '22px Consolas, monospace';
-  ctx.fillStyle = s.pulse > 150 ? warn : cyan;
-  ctx.fillText(`${T('sPulse')} ${s.pulse}`, 24, 156);
-  ctx.fillStyle = +s.o2 < 25 ? warn : cyan;
-  ctx.fillText(`${T('sO2')} ${s.o2}%`, 210, 156);
-  ctx.fillStyle = s.integ < 70 ? warn : cyan;
-  ctx.fillText(`${T('sIntegr')} ${s.integ.toFixed(0)}%`, 330, 156);
-  ctx.fillStyle = s.sig > 0 ? (s.sig < 35 ? warn : cyan) : warn;
-  ctx.fillText(s.sig > 0 ? `${T('sSignal')} ${s.sig.toFixed(0)}%` : T('sNoSignal'), 24, 198);
-  ctx.fillStyle = s.tidalG > 1 ? warn : cyan;
-  ctx.fillText(`${T('sTidal')} ${s.fmtG} g`, 270, 198);
+  // нижняя строка — как #imm-hud: r · v · отсчёт до горизонта/гибели
+  ctx.font = '600 27px Consolas, "Courier New", monospace';
+  let base = `r = ${immersion.r.toFixed(2)} rs · v = ${(beta * 100).toFixed(0)}% c · `;
+  let tail, tailWarn;
+  if (immersion.r > 1 && immersion.rSpag < 1) {
+    const tHor = immFallTime(immersion.r, 1) * rs1() / C / immersion.speed;
+    tail = TF('hudHorizon', { t: fmtTime(Math.max(tHor, 0)) });
+    tailWarn = false;
+  } else {
+    const tSpag = immFallTime(immersion.r, immersion.rSpag) * rs1() / C / immersion.speed;
+    const inside = immersion.r <= 1 ? T('hudInside') + ' · ' : '';
+    tail = inside + TF('hudDoom', { t: fmtTime(Math.max(tSpag, 0)) });
+    tailWarn = true;
+  }
+  const x0 = (W - ctx.measureText(base + tail).width) / 2;
+  ctx.fillStyle = dim;
+  ctx.fillText(base, x0, H - 52);
+  ctx.fillStyle = tailWarn ? warn : val;
+  ctx.fillText(tail, x0 + ctx.measureText(base).width, H - 52);
+  try { ctx.letterSpacing = '0px'; } catch (e) {}
+  ctx.shadowBlur = 0;
 }
 
 // сборка квада: центр c, полуоси ax/ay, uv 0..1 (v вверх)
@@ -2891,17 +2974,17 @@ function drawVROverlay(view, vp) {
 
   if (hudOn) {
     const now = performance.now();
-    if (now - vrUi.hudLast > 250 || !vrUi.hudTex) {
+    if (now - vrUi.hudLast > 220 || !vrUi.hudTex) {
       vrUi.hudLast = now;
       vrDrawHud();
       if (!vrUi.hudTex) vrUi.hudTex = vrMakeTex(VRHUD_W, VRHUD_H);
       vrUploadCanvas(vrUi.hudTex, vrUi.hudCanvas);
     }
-    // head-locked: рисуем прямо в координатах глаза (uView = identity)
+    // head-locked визор на весь взгляд: рисуем в координатах глаза (uView = identity)
     gl.uniformMatrix4fv(vrUiP.u.uView, false, IDENT4);
     const hud = [];
-    vrPushQuad(hud, [0, -0.245, -0.75], [0.21, 0, 0], [0, 0.092, 0]);
-    draw(hud, vrUi.hudTex, [1, 1, 1, 0.92]);
+    vrPushQuad(hud, [0, -0.02, -0.9], [0.55, 0, 0], [0, 0.344, 0]);
+    draw(hud, vrUi.hudTex, [1, 1, 1, 1]);
   }
 
   gl.disable(gl.BLEND);
