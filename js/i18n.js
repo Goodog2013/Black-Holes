@@ -107,6 +107,23 @@ const I18N = {
     sTidal: 'Прилив',
     sNoSignal: 'СИГНАЛ ПОТЕРЯН',
 
+    // VR-меню и события
+    vrMenuTitle: 'Меню',
+    vrCat: 'Категория',
+    vrObj: 'Объект',
+    vrBH: 'Чёрная дыра',
+    vrPlasma: 'Плазма',
+    vrTime: 'Время',
+    vrPause: 'Пауза',
+    vrDisk: 'Диск',
+    vrMerge: 'Слияние',
+    vrImm: 'Погружение',
+    vrFooter: 'Курок — спавн/клик · X — меню · A — пауза · B — выход',
+    kickMsg: '🚀 Гравитационная отдача: итоговая дыра получила пинок {v} км/с',
+    hawkDone: '💥 Дыра испарилась — финальная вспышка Хокинга!',
+    chkHawking: '☢ Испарение Хокинга',
+    hintHawking: 'Честная формула: заметно лишь на крошечных дырах (пресет «Первичная ЧД») при большом множителе времени.',
+
     // кнопки-FAB (title)
     tVR: 'VR-режим (шлем, WebXR)',
     tImm: 'Погружение — падение в дыру (I)',
@@ -254,6 +271,24 @@ const I18N = {
     sTidal: 'Tidal',
     sNoSignal: 'SIGNAL LOST',
 
+    // VR menu and events
+    vrMenuTitle: 'Menu',
+    vrCat: 'Category',
+    vrObj: 'Object',
+    vrBH: 'Black hole',
+    vrPlasma: 'Plasma',
+    vrTime: 'Time',
+    vrPause: 'Pause',
+    vrDisk: 'Disk',
+    vrMerge: 'Merger',
+    vrImm: 'Immersion',
+    vrFooter: 'Trigger — spawn/click · X — menu · A — pause · B — exit',
+    kickMsg: '🚀 Gravitational recoil: final hole kicked {v} km/s',
+    hawkDone: '💥 Black hole evaporated — final Hawking flash!',
+    chkHawking: '☢ Hawking evaporation',
+    hintHawking: 'Exact formula: noticeable only on tiny holes (the «Primordial BH» preset) with a large time multiplier.',
+
+    // FAB buttons (title)
     tVR: 'VR mode (headset, WebXR)',
     tImm: 'Immersion — fall into the hole (I)',
     tCine: 'Cinema mode (C)',
@@ -407,6 +442,10 @@ const PRESET_EN = {
   'Звёздная ЧД (10 M☉)': {
     name: 'Stellar BH (10 M☉)',
     desc: 'Typical stellar-mass black hole — remnant of a massive star collapse.',
+  },
+  'Первичная ЧД (10⁹ кг)': {
+    name: 'Primordial BH (10⁹ kg)',
+    desc: 'Hypothetical hole from the early Universe, horizon smaller than a proton. Enable «Hawking evaporation» and a large time multiplier — watch it shrink and explode.',
   },
 };
 // Английские имена/описания пресетов плазмы (ключ — id из DISK_PRESETS)

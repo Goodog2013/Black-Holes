@@ -889,6 +889,36 @@ void main(){
 }
 `;
 
+// ============ VR-оверлеи: панель меню, луч-указатель, HUD скафандра ============
+// Рисуются в фреймбуфер шлема поверх композита, в координатах refSpace (метры),
+// с настоящими матрицами XRView — без участия сценического рейтрейсинга.
+
+const VRUI_VERT_SRC = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aUV;
+uniform mat4 uProj;
+uniform mat4 uView;   // inverse-транформация глаза; identity = head-locked
+out vec2 vUV;
+void main(){
+  vUV = aUV;
+  gl_Position = uProj * uView * vec4(aPos, 1.);
+}
+`;
+
+const VRUI_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform vec4 uColor;   // множитель (для лучей/курсора — сплошной цвет)
+uniform int  uUseTex;
+out vec4 fragColor;
+void main(){
+  vec4 c = uUseTex > 0 ? texture(uTex, vUV) : vec4(1.);
+  fragColor = c * uColor;
+}
+`;
+
 // ============ следы орбит (розетка релятивистской прецессии) ============
 
 const TRAILVERT_SRC = `#version 300 es

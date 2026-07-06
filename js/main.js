@@ -24,6 +24,7 @@ const state = {
   ergoOn: true,            // визуализация эргосферы
   trailsOn: true,          // следы орбит (розетка прецессии)
   fieldOn: true,           // магнитные силовые линии у полюсов
+  hawkingOn: false,        // испарение Хокинга (заметно на крошечных ЧД + больших × времени)
   echo: { t: -1, pos: [0, 0, 0], str: 0 },  // световое эхо от вспышки
   accWaves: [],            // волны яркости по диску от точек аккреции
 };
@@ -101,6 +102,18 @@ const pdrawP = HDR ? makeProgram(PFRAG_SRC, [
 const trailP = makeProgram(TRAILFRAG_SRC, [
   'uCamPos','uCamMat','uFov','uRes','uCol','uBright','uBHPosT','uXR','uXRTan',
 ], TRAILVERT_SRC);
+const vrUiP = makeProgram(VRUI_FRAG_SRC, ['uProj', 'uView', 'uTex', 'uColor', 'uUseTex'], VRUI_VERT_SRC);
+
+// геометрия VR-оверлеев: динамические квады (позиция + uv)
+const vrUiVAO = gl.createVertexArray();
+const vrUiVBO = gl.createBuffer();
+gl.bindVertexArray(vrUiVAO);
+gl.bindBuffer(gl.ARRAY_BUFFER, vrUiVBO);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 20, 0);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 20, 12);
+gl.bindVertexArray(null);
 const U = mainP.u;
 U.uBHPos = U['uBHPos[0]'];
 U.uBHRs = U['uBHRs[0]'];
@@ -788,8 +801,8 @@ function updateImmHud() {
   hud.innerHTML = txt;
 }
 
-// ---- HUD скафандра: телеметрия состояния (футуристичный визор) ----
-function updateSuitHud(suit) {
+// ---- HUD скафандра: телеметрия состояния (общая для DOM-визора и VR) ----
+function suitTelemetry() {
   const r = immersion.r;
   const dM = r * rs1(); // дистанция до центра, м
   // приливное ускорение на теле ~2 м (разница голова—ноги), в g
@@ -804,7 +817,11 @@ function updateSuitHud(suit) {
   const fmtG = tidalG < 0.01 ? tidalG.toExponential(1) : tidalG < 100 ? tidalG.toFixed(2) : fmtExp(tidalG);
   const tauMin = Math.floor(immersion.tau / 60);
   const tauStr = `${String(tauMin).padStart(2, '0')}:${String(Math.floor(immersion.tau % 60)).padStart(2, '0')}`;
+  return { tidalG, sig, pulse, o2, integ, fmtG, tauStr };
+}
 
+function updateSuitHud(suit) {
+  const { tidalG, sig, pulse, o2, integ, fmtG, tauStr } = suitTelemetry();
   const tl = suit.querySelector('.sh-tl'), tr = suit.querySelector('.sh-tr');
   tl.innerHTML =
     `${T('sTau')}: <span class="val">${tauStr}</span><br>` +
@@ -1377,15 +1394,87 @@ function stepMerger(dtReal) {
   if (mg.a <= rsSum || mg.t >= mg.T) {
     // Слияние! ~5% массы уносится гравитационными волнами
     const radiated = 0.05 * Math.min(state.M, mg.m2) / Math.max(state.M, mg.m2) * 4;
+    const q = Math.min(state.M, mg.m2) / Math.max(state.M, mg.m2);
+    const eta = state.M * mg.m2 / (Mtot * Mtot); // симметричное отношение масс
     state.M = Mtot * (1 - Math.min(radiated, 0.05));
     state.spin = Math.min(0.95, 0.68 + state.spin * 0.2);
     mg.done = true; mg.active = false;
     state.flash = 1;
     state.rippleT = 0;
     state.diskBoost = Math.min(3, state.diskBoost + 1.2);
+    applyGWKick(eta, q, mg.phase);
     syncMassUI();
     syncSpinUI();
   }
+}
+
+// Гравитационная отдача (kick): асимметричное излучение ГВ даёт итоговой дыре
+// импульс. В плоскости орбиты — формула Фитчетта (максимум ~175 км/с при q≈0.38,
+// ноль при равных массах), вдоль оси орбиты — «суперкик» от спинов (до ~3000 км/с).
+// Дыра в сцене закреплена в начале координат, поэтому отдачу видим в её системе
+// покоя: все свободные объекты и облака получают -v_kick.
+function applyGWKick(eta, q, phase) {
+  const vPlane = 9.8e6 * eta * eta * Math.sqrt(Math.max(1 - 4 * eta, 0)); // м/с
+  const vSuper = 2.5e6 * state.spin * eta * eta / 0.0625 * Math.sin(phase * 3.7); // фаза спинов ~случайна
+  const ang = phase + Math.PI * 0.5;
+  const kick = [
+    vPlane * Math.cos(ang),
+    vSuper,
+    vPlane * Math.sin(ang),
+  ];
+  const vTot = Math.hypot(kick[0], kick[1], kick[2]);
+  if (vTot < 1) return;
+  for (const o of state.objects) {
+    o.vel[0] -= kick[0]; o.vel[1] -= kick[1]; o.vel[2] -= kick[2];
+  }
+  for (const g of gasClouds) {
+    g.vel[0] -= kick[0]; g.vel[1] -= kick[1]; g.vel[2] -= kick[2];
+  }
+  flashHint(TF('kickMsg', { v: (vTot / 1e3).toFixed(0) }));
+}
+
+// ---- испарение Хокинга: dM/dt = -ħc⁴/(15360π G² M²) ----
+// M³ убывает линейно по времени — интегрируем аналитически, стабильно при любом dt.
+// Для реальных дыр эффект ничтожен; смотреть на пресете «Первичная ЧД» с большим ×времени.
+const HAWK_C = 3.96e15; // ħc⁴/(15360π G²), кг³/с
+let hawkSyncT = 0;
+function stepHawking(dtSim) {
+  if (!state.hawkingOn || dtSim <= 0) return;
+  const m3 = state.M * state.M * state.M - 3 * HAWK_C * dtSim;
+  if (m3 <= 1e18) {
+    // финал: последняя секунда уносит остаток в гамма-вспышке
+    state.M = 1e6;
+    state.hawkingOn = false;
+    const chk = el('hawking-chk');
+    if (chk) chk.checked = false;
+    state.flash = 1;
+    triggerEcho([0, 0, 0], 1.5);
+    state.diskBoost = Math.min(3, state.diskBoost + 1.5);
+    flashHint(T('hawkDone'));
+    hawkSyncUI();
+    return;
+  }
+  state.M = Math.cbrt(m3);
+  const now = performance.now();
+  if (now - hawkSyncT > 250) { hawkSyncT = now; hawkSyncUI(); }
+}
+// подписи массы без autoTimeScale: пользовательский ×времени не трогаем
+function hawkSyncUI() {
+  el('mass-slider').value = Math.log10(state.M / MSUN);
+  el('mass-label').textContent = fmtMass(state.M);
+  el('diam-input').value = fmtExp(2 * rs1() / 1e3);
+}
+
+// временное сообщение в строке подсказок
+let hintTimer = null;
+function flashHint(msg) {
+  const bar = el('hint-bar');
+  if (!bar) return;
+  bar.textContent = msg;
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => {
+    bar.textContent = camMode.fly ? T('hintFly') : camMode.imm ? T('hintImm') : T('hintDefault');
+  }, 7000);
 }
 
 function drawGW() {
@@ -1622,6 +1711,7 @@ function setupUI() {
   el('realscale-chk').onchange = e => state.realScale = e.target.checked;
   el('ergo-chk').onchange = e => state.ergoOn = e.target.checked;
   el('field-chk').onchange = e => state.fieldOn = e.target.checked;
+  el('hawking-chk').onchange = e => state.hawkingOn = e.target.checked;
   el('trails-chk').onchange = e => {
     state.trailsOn = e.target.checked;
     if (!state.trailsOn) for (const o of state.objects) o.trail = null;
@@ -1853,6 +1943,7 @@ function tick(now) {
     stepObjects(dtSim);
     stepGasClouds(dtSim);
     stepMerger(dtReal * camTimeFactor);
+    stepHawking(dtSim);
   }
   // медленное поглощение захваченных объектов
   if (!state.paused) {
@@ -2245,6 +2336,8 @@ async function enterVR() {
       if (xr.rt) { Object.values(xr.rt).forEach(destroyTarget); xr.rt = null; }
       xrCam = null; xrEye = 0;
       xrOut.fb = null; xrOut.vp = null;
+      vrUi.on = false; vrUi.toggleReq = false;
+      vrUi.hover = null; vrUi.ray = null; vrUi.cursor = null;
       if (xr.savedQ) quality = xr.savedQ;
       if (btn) btn.classList.remove('active');
       resize();
@@ -2278,13 +2371,21 @@ function xrFrame(now, xrf) {
   if (!session) return;
   session.requestAnimationFrame(xrFrame);
   tick(now); // физика — один шаг на кадр, глаза делят состояние
-  pollXRInput();
   const layer = xr.layer;
   gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
   gl.clearColor(0, 0, 0, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
   const pose = xrf.getViewerPose(xr.refSpace);
-  if (!pose) return;
+  if (!pose) { pollXRInput(); return; }
+  // VR-меню: запрос на показ/скрытие (X), указатель, фоновая вибрация
+  if (vrUi.toggleReq) {
+    vrUi.toggleReq = false;
+    vrUi.on = !vrUi.on;
+    if (vrUi.on) vrPlaceMenu(pose);
+  }
+  vrUpdatePointer(session, xrf);
+  pollXRInput();
+  xrHaptics();
   // адаптивное разрешение: если кадр не влезает в такт дисплея — уменьшаем
   // масштаб рендера глаза, если есть запас — понемногу возвращаем
   if (xrPerf.last) {
@@ -2331,6 +2432,7 @@ function xrFrame(now, xrf) {
     xrOut.fb = layer.framebuffer;
     xrOut.vp = [vp.x, vp.y, vp.width, vp.height];
     render(visT);
+    drawVROverlay(view, vp); // меню, луч-указатель, HUD скафандра
   }
   RT = mainRT;
   xrCam = null; xrEye = 0;
@@ -2338,7 +2440,7 @@ function xrFrame(now, xrf) {
 }
 
 // контроллеры Touch: правый стик — взгляд/орбита, левый — зум (в полёте — ход),
-// курок — заспавнить выбранный объект, squeeze — погружение, A — пауза, B — выход
+// курок — спавн (или клик по меню), squeeze — погружение, X — меню, A — пауза, B — выход
 function pollXRInput() {
   if (!xr.session) return;
   for (const src of xr.session.inputSources) {
@@ -2367,14 +2469,25 @@ function pollXRInput() {
     }
     const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
     const h = src.handedness;
-    xrBtnEdge(h + 'trig', b(0), () => el('spawn-btn').onclick());
+    if (h === 'right') {
+      // курок над меню — клик, иначе — спавн выбранного объекта
+      xrBtnEdge('r-trig', b(0), () => {
+        if (vrUi.on && vrUi.hover) { vrClickHover(); xrPulse('right', 0.4, 30); }
+        else { el('spawn-btn').click(); xrPulse('right', 0.55, 60); }
+      });
+      xrBtnEdge('r-a', b(4), () => {
+        state.paused = !state.paused;
+        el('pause-chk').checked = state.paused;
+        vrUi.dirty = true;
+      });
+    } else {
+      xrBtnEdge('l-trig', b(0), () => { el('spawn-btn').click(); xrPulse('left', 0.55, 60); });
+      xrBtnEdge('l-x', b(4), () => { vrUi.toggleReq = true; });
+    }
     xrBtnEdge(h + 'sq', b(1), () => {
       if (immersion.active) exitImmersion();
       else startImmersion(+el('imm-dist').value, +el('imm-speed').value);
-    });
-    xrBtnEdge(h + 'a', b(4), () => {
-      state.paused = !state.paused;
-      el('pause-chk').checked = state.paused;
+      vrUi.dirty = true;
     });
     xrBtnEdge(h + 'b', b(5), () => xr.session && xr.session.end());
   }
@@ -2382,6 +2495,407 @@ function pollXRInput() {
 function xrBtnEdge(k, v, fn) {
   if (v && !xr.btn[k]) fn();
   xr.btn[k] = v;
+}
+
+// вибрация контроллеров: hand = 'left' | 'right' | null (обе)
+function xrPulse(hand, val, ms) {
+  if (!xr.session) return;
+  for (const src of xr.session.inputSources) {
+    if (hand && src.handedness !== hand) continue;
+    const act = src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0];
+    if (act && act.pulse) act.pulse(Math.min(Math.max(val, 0), 1), ms);
+  }
+}
+
+// фоновая гаптика: чирп слияния, удар коалесценции, приливы в погружении
+function xrHaptics() {
+  const mg = state.merger;
+  if (mg.active && !mg.done && mg.a0 > 0) {
+    const k = 1 - mg.a / mg.a0;
+    if (k > 0.55) {
+      const v = Math.min(1, (k - 0.55) * 2.2);
+      xrPulse(null, v * v * 0.8, 40);
+    }
+  }
+  if (state.rippleT >= 0 && state.rippleT < 0.25) xrPulse(null, 1, 250);
+  if (camMode.imm && immersion.active && !horizonPlaying) {
+    const t = suitTelemetry().tidalG;
+    if (t > 0.2) xrPulse(null, Math.min(0.9, t / 40), 40);
+  }
+}
+
+// ============================================================
+// VR-меню (панель перед взглядом, X — показать/скрыть), луч-указатель
+// правого контроллера и head-locked HUD скафандра в погружении
+// ============================================================
+const VRUI_W = 512, VRUI_H = 704;   // канвас панели меню
+const VRHUD_W = 512, VRHUD_H = 224; // канвас HUD погружения
+const vrUi = {
+  on: false, toggleReq: false,
+  pos: null, xAx: null, yAx: null, nrm: null, // панель в refSpace (метры)
+  w: 0.40, h: 0.55,
+  canvas: null, tex: null, dirty: true,
+  hit: [],            // хитбоксы кнопок в px канваса
+  hover: null,        // кнопка под лучом
+  ray: null,          // { o, d } правого контроллера (refSpace)
+  cursor: null,       // точка попадания луча в панель
+  hudCanvas: null, hudTex: null, hudLast: 0,
+};
+const IDENT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+
+function vrMakeTex(w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function vrUploadCanvas(tex, cnv) {
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cnv);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+}
+
+// строки меню: циклические селекторы поверх обычных DOM-контролов,
+// чтобы VR и 2D-интерфейс всегда были синхронны
+function vrMenuRows() {
+  const catSel = el('cat-select'), objSel = el('obj-select');
+  const ps = el('preset-select'), ds = el('disk-preset');
+  const cur = sel => (sel.options[sel.selectedIndex] || {}).textContent || '—';
+  const cyc = (sel, d, after) => {
+    const n = sel.options.length;
+    if (!n) return;
+    sel.selectedIndex = (sel.selectedIndex + d + n) % n;
+    if (after) after();
+  };
+  return [
+    { id: 'cat', label: T('vrCat'), val: () => cur(catSel), cyc: d => cyc(catSel, d, () => catSel.onchange()) },
+    { id: 'obj', label: T('vrObj'), val: () => cur(objSel), cyc: d => cyc(objSel, d, () => objSel.onchange()) },
+    { id: 'bh', label: T('vrBH'), val: () => cur(ps), cyc: d => cyc(ps, d, () => el('preset-apply').click()) },
+    { id: 'plasma', label: T('vrPlasma'), val: () => cur(ds), cyc: d => cyc(ds, d, () => ds.onchange()) },
+    { id: 'time', label: T('vrTime'), val: () => '×' + fmtExp(state.timeScale), cyc: d => {
+      const s = el('ts-slider');
+      s.value = Math.max(-1, Math.min(9, +s.value + d * 0.5));
+      s.dispatchEvent(new Event('input'));
+    } },
+  ];
+}
+function vrMenuToggles() {
+  return [
+    { id: 'pause', label: T('vrPause'), on: () => state.paused, act: () => {
+      state.paused = !state.paused;
+      el('pause-chk').checked = state.paused;
+    } },
+    { id: 'disk', label: T('vrDisk'), on: () => state.diskOn, act: () => {
+      const c = el('disk-on');
+      c.checked = !c.checked;
+      c.dispatchEvent(new Event('change'));
+    } },
+    { id: 'merge', label: T('vrMerge'), on: () => state.merger.active, act: () => {
+      state.merger.active ? stopMerger() : startMerger();
+    } },
+    { id: 'imm', label: T('vrImm'), on: () => immersion.active, act: () => {
+      if (immersion.active) exitImmersion();
+      else startImmersion(+el('imm-dist').value, +el('imm-speed').value);
+    } },
+  ];
+}
+
+function vrDrawMenu() {
+  if (!vrUi.canvas) {
+    vrUi.canvas = document.createElement('canvas');
+    vrUi.canvas.width = VRUI_W;
+    vrUi.canvas.height = VRUI_H;
+  }
+  const ctx = vrUi.canvas.getContext('2d');
+  const W = VRUI_W, H = VRUI_H;
+  vrUi.hit = [];
+  ctx.clearRect(0, 0, W, H);
+  const rr = (x, y, w, h, r) => {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  };
+  rr(0, 0, W, H, 26);
+  ctx.fillStyle = 'rgba(10, 12, 20, 0.94)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255, 160, 60, 0.55)';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  ctx.fillStyle = '#ffb45e';
+  ctx.font = '600 30px "Segoe UI", sans-serif';
+  ctx.fillText(T('vrMenuTitle'), 26, 48);
+
+  const btn = (x, y, w, h, id, act, label, active) => {
+    rr(x, y, w, h, 12);
+    ctx.fillStyle = active ? 'rgba(255, 120, 40, 0.4)'
+      : vrUi.hover && vrUi.hover.id === id ? 'rgba(255, 180, 90, 0.28)'
+      : 'rgba(255, 255, 255, 0.07)';
+    ctx.fill();
+    ctx.strokeStyle = active ? 'rgba(255, 160, 60, 0.9)' : 'rgba(255, 255, 255, 0.2)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#eee';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, x + w / 2, y + h / 2 + 1);
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    vrUi.hit.push({ x, y, w, h, id, act });
+  };
+
+  let y = 74;
+  const rowH = 88;
+  for (const row of vrMenuRows()) {
+    ctx.fillStyle = '#99a';
+    ctx.font = '20px "Segoe UI", sans-serif';
+    ctx.fillText(row.label, 26, y + 20);
+    ctx.font = '600 24px "Segoe UI", sans-serif';
+    btn(26, y + 30, 56, 48, row.id + '<', () => row.cyc(-1), '‹');
+    btn(W - 82, y + 30, 56, 48, row.id + '>', () => row.cyc(1), '›');
+    // значение по центру, с обрезкой длинных названий
+    ctx.fillStyle = '#ffd9a0';
+    ctx.font = '600 23px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    let v = row.val();
+    while (ctx.measureText(v).width > W - 200 && v.length > 3) v = v.slice(0, -2);
+    ctx.fillText(v, W / 2, y + 60);
+    ctx.textAlign = 'left';
+    y += rowH;
+  }
+
+  // тогглы 2×2
+  y += 6;
+  const toggles = vrMenuToggles();
+  const bw = (W - 26 * 2 - 20) / 2, bh = 62;
+  ctx.font = '600 23px "Segoe UI", sans-serif';
+  toggles.forEach((t, i) => {
+    const bx = 26 + (i % 2) * (bw + 20);
+    const by = y + Math.floor(i / 2) * (bh + 14);
+    btn(bx, by, bw, bh, t.id, t.act, t.label, t.on());
+  });
+  y += 2 * bh + 14;
+
+  ctx.fillStyle = '#667';
+  ctx.font = '17px "Segoe UI", sans-serif';
+  ctx.fillText(T('vrFooter'), 26, H - 22);
+}
+
+function vrClickHover() {
+  const hb = vrUi.hover;
+  if (!hb) return;
+  hb.act();
+  vrUi.dirty = true;
+}
+
+// панель появляется в 60 см перед взглядом, вертикально, лицом к пользователю
+function vrPlaceMenu(pose) {
+  const hm = pose.transform.matrix;
+  let f = [-hm[8], -hm[9], -hm[10]];
+  const fl = Math.hypot(f[0], f[2]) || 1;
+  f = [f[0] / fl, 0, f[2] / fl];
+  vrUi.pos = [hm[12] + f[0] * 0.6, hm[13] - 0.02, hm[14] + f[2] * 0.6];
+  vrUi.nrm = [-f[0], 0, -f[2]];
+  vrUi.xAx = norm3(cross3(f, [0, 1, 0])); // «право» для смотрящего
+  vrUi.yAx = [0, 1, 0];
+  vrUi.dirty = true;
+}
+
+// луч правого контроллера: пересечение с плоскостью панели -> hover/курсор
+function vrUpdatePointer(session, xrf) {
+  vrUi.ray = null;
+  vrUi.cursor = null;
+  const prevHover = vrUi.hover;
+  vrUi.hover = null;
+  for (const src of session.inputSources) {
+    if (src.handedness !== 'right' || !src.targetRaySpace) continue;
+    const p = xrf.getPose(src.targetRaySpace, xr.refSpace);
+    if (!p) continue;
+    const m = p.transform.matrix;
+    vrUi.ray = { o: [m[12], m[13], m[14]], d: norm3([-m[8], -m[9], -m[10]]) };
+  }
+  if (vrUi.on && vrUi.pos && vrUi.ray) {
+    const { o, d } = vrUi.ray;
+    const rel = [vrUi.pos[0] - o[0], vrUi.pos[1] - o[1], vrUi.pos[2] - o[2]];
+    const denom = d[0] * vrUi.nrm[0] + d[1] * vrUi.nrm[1] + d[2] * vrUi.nrm[2];
+    if (Math.abs(denom) > 1e-4) {
+      const t = (rel[0] * vrUi.nrm[0] + rel[1] * vrUi.nrm[1] + rel[2] * vrUi.nrm[2]) / denom;
+      if (t > 0.05 && t < 4) {
+        const p = [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+        const lp = [p[0] - vrUi.pos[0], p[1] - vrUi.pos[1], p[2] - vrUi.pos[2]];
+        const lu = (lp[0] * vrUi.xAx[0] + lp[1] * vrUi.xAx[1] + lp[2] * vrUi.xAx[2]) / vrUi.w + 0.5;
+        const lv = (lp[0] * vrUi.yAx[0] + lp[1] * vrUi.yAx[1] + lp[2] * vrUi.yAx[2]) / vrUi.h + 0.5;
+        if (lu >= 0 && lu <= 1 && lv >= 0 && lv <= 1) {
+          vrUi.cursor = p;
+          const px = lu * VRUI_W, py = (1 - lv) * VRUI_H;
+          vrUi.hover = vrUi.hit.find(b => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) || null;
+        }
+      }
+    }
+  }
+  if ((prevHover && prevHover.id) !== (vrUi.hover && vrUi.hover.id)) vrUi.dirty = true;
+}
+
+// HUD погружения: телеметрия скафандра на полупрозрачной плашке ниже взгляда
+function vrDrawHud() {
+  if (!vrUi.hudCanvas) {
+    vrUi.hudCanvas = document.createElement('canvas');
+    vrUi.hudCanvas.width = VRHUD_W;
+    vrUi.hudCanvas.height = VRHUD_H;
+  }
+  const ctx = vrUi.hudCanvas.getContext('2d');
+  const W = VRHUD_W, H = VRHUD_H;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(6, 10, 18, 0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(120, 210, 255, 0.4)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, W - 2, H - 2);
+
+  const s = suitTelemetry();
+  const beta = Math.min(immBetaLocal(), 0.999);
+  const cyan = 'rgba(150, 220, 255, 0.9)', warn = 'rgba(255, 130, 80, 0.95)';
+  ctx.font = '600 34px Consolas, monospace';
+  ctx.fillStyle = cyan;
+  ctx.fillText(`r ${immersion.r.toFixed(2)} rs`, 24, 52);
+  ctx.fillText(`v ${(beta * 100).toFixed(0)}% c`, 270, 52);
+
+  // отсчёт: до горизонта снаружи, до гибели внутри
+  ctx.font = '600 30px Consolas, monospace';
+  if (immersion.r > 1 && immersion.rSpag < 1) {
+    const tHor = immFallTime(immersion.r, 1) * rs1() / C / immersion.speed;
+    ctx.fillStyle = cyan;
+    ctx.fillText(TF('hudHorizon', { t: fmtTime(Math.max(tHor, 0)) }), 24, 104);
+  } else {
+    const tSpag = immFallTime(immersion.r, immersion.rSpag) * rs1() / C / immersion.speed;
+    ctx.fillStyle = warn;
+    const inside = immersion.r <= 1 ? T('hudInside') + ' · ' : '';
+    ctx.fillText(inside + TF('hudDoom', { t: fmtTime(Math.max(tSpag, 0)) }), 24, 104);
+  }
+
+  // текстовые метки вместо эмодзи: канвас в Quest Browser может не иметь эмодзи-шрифта
+  ctx.font = '22px Consolas, monospace';
+  ctx.fillStyle = s.pulse > 150 ? warn : cyan;
+  ctx.fillText(`${T('sPulse')} ${s.pulse}`, 24, 156);
+  ctx.fillStyle = +s.o2 < 25 ? warn : cyan;
+  ctx.fillText(`${T('sO2')} ${s.o2}%`, 210, 156);
+  ctx.fillStyle = s.integ < 70 ? warn : cyan;
+  ctx.fillText(`${T('sIntegr')} ${s.integ.toFixed(0)}%`, 330, 156);
+  ctx.fillStyle = s.sig > 0 ? (s.sig < 35 ? warn : cyan) : warn;
+  ctx.fillText(s.sig > 0 ? `${T('sSignal')} ${s.sig.toFixed(0)}%` : T('sNoSignal'), 24, 198);
+  ctx.fillStyle = s.tidalG > 1 ? warn : cyan;
+  ctx.fillText(`${T('sTidal')} ${s.fmtG} g`, 270, 198);
+}
+
+// сборка квада: центр c, полуоси ax/ay, uv 0..1 (v вверх)
+function vrPushQuad(arr, c, ax, ay) {
+  const v = [
+    [c[0] - ax[0] - ay[0], c[1] - ax[1] - ay[1], c[2] - ax[2] - ay[2], 0, 0],
+    [c[0] + ax[0] - ay[0], c[1] + ax[1] - ay[1], c[2] + ax[2] - ay[2], 1, 0],
+    [c[0] + ax[0] + ay[0], c[1] + ax[1] + ay[1], c[2] + ax[2] + ay[2], 1, 1],
+    [c[0] - ax[0] + ay[0], c[1] - ax[1] + ay[1], c[2] - ax[2] + ay[2], 0, 1],
+  ];
+  for (const i of [0, 1, 2, 0, 2, 3]) arr.push(...v[i]);
+}
+
+function drawVROverlay(view, vp) {
+  const menuOn = vrUi.on && vrUi.pos;
+  const hudOn = camMode.imm && immersion.active && !horizonPlaying;
+  if (!menuOn && !hudOn) return;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, xr.layer.framebuffer);
+  gl.viewport(vp.x, vp.y, vp.width, vp.height);
+  gl.useProgram(vrUiP.prog);
+  gl.uniformMatrix4fv(vrUiP.u.uProj, false, view.projectionMatrix);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // канвас загружен premultiplied
+  gl.bindVertexArray(vrUiVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vrUiVBO);
+  const draw = (arr, tex, color) => {
+    if (!arr.length) return;
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.DYNAMIC_DRAW);
+    if (tex) bindTex(0, tex, vrUiP.u.uTex);
+    gl.uniform1i(vrUiP.u.uUseTex, tex ? 1 : 0);
+    gl.uniform4f(vrUiP.u.uColor, color[0], color[1], color[2], color[3]);
+    gl.drawArrays(gl.TRIANGLES, 0, arr.length / 5);
+  };
+
+  if (menuOn) {
+    gl.uniformMatrix4fv(vrUiP.u.uView, false, view.transform.inverse.matrix);
+    if (vrUi.dirty) {
+      vrDrawMenu();
+      if (!vrUi.tex) vrUi.tex = vrMakeTex(VRUI_W, VRUI_H);
+      vrUploadCanvas(vrUi.tex, vrUi.canvas);
+      vrUi.dirty = false;
+    }
+    const panel = [];
+    vrPushQuad(panel,
+      vrUi.pos,
+      [vrUi.xAx[0] * vrUi.w / 2, vrUi.xAx[1] * vrUi.w / 2, vrUi.xAx[2] * vrUi.w / 2],
+      [vrUi.yAx[0] * vrUi.h / 2, vrUi.yAx[1] * vrUi.h / 2, vrUi.yAx[2] * vrUi.h / 2]);
+    draw(panel, vrUi.tex, [1, 1, 1, 1]);
+    // луч указателя и курсор
+    if (vrUi.ray) {
+      const { o, d } = vrUi.ray;
+      const end = vrUi.cursor || [o[0] + d[0] * 1.4, o[1] + d[1] * 1.4, o[2] + d[2] * 1.4];
+      const em = view.transform.matrix;
+      const eye = [em[12], em[13], em[14]];
+      const mid = [(o[0] + end[0]) / 2 - eye[0], (o[1] + end[1]) / 2 - eye[1], (o[2] + end[2]) / 2 - eye[2]];
+      const side = norm3(cross3(d, mid));
+      const hw = 0.0016;
+      const ray = [];
+      const p0 = [o[0] + d[0] * 0.04, o[1] + d[1] * 0.04, o[2] + d[2] * 0.04];
+      ray.push(
+        p0[0] - side[0] * hw, p0[1] - side[1] * hw, p0[2] - side[2] * hw, 0, 0,
+        p0[0] + side[0] * hw, p0[1] + side[1] * hw, p0[2] + side[2] * hw, 1, 0,
+        end[0] + side[0] * hw, end[1] + side[1] * hw, end[2] + side[2] * hw, 1, 1,
+        p0[0] - side[0] * hw, p0[1] - side[1] * hw, p0[2] - side[2] * hw, 0, 0,
+        end[0] + side[0] * hw, end[1] + side[1] * hw, end[2] + side[2] * hw, 1, 1,
+        end[0] - side[0] * hw, end[1] - side[1] * hw, end[2] - side[2] * hw, 0, 1,
+      );
+      draw(ray, null, [1.0, 0.62, 0.24, 0.55]);
+      if (vrUi.cursor) {
+        const cpos = [
+          vrUi.cursor[0] + vrUi.nrm[0] * 0.004,
+          vrUi.cursor[1] + vrUi.nrm[1] * 0.004,
+          vrUi.cursor[2] + vrUi.nrm[2] * 0.004,
+        ];
+        const cq = [];
+        vrPushQuad(cq, cpos,
+          [vrUi.xAx[0] * 0.008, vrUi.xAx[1] * 0.008, vrUi.xAx[2] * 0.008],
+          [vrUi.yAx[0] * 0.008, vrUi.yAx[1] * 0.008, vrUi.yAx[2] * 0.008]);
+        draw(cq, null, [1, 0.85, 0.5, 0.95]);
+      }
+    }
+  }
+
+  if (hudOn) {
+    const now = performance.now();
+    if (now - vrUi.hudLast > 250 || !vrUi.hudTex) {
+      vrUi.hudLast = now;
+      vrDrawHud();
+      if (!vrUi.hudTex) vrUi.hudTex = vrMakeTex(VRHUD_W, VRHUD_H);
+      vrUploadCanvas(vrUi.hudTex, vrUi.hudCanvas);
+    }
+    // head-locked: рисуем прямо в координатах глаза (uView = identity)
+    gl.uniformMatrix4fv(vrUiP.u.uView, false, IDENT4);
+    const hud = [];
+    vrPushQuad(hud, [0, -0.245, -0.75], [0.21, 0, 0], [0, 0.092, 0]);
+    draw(hud, vrUi.hudTex, [1, 1, 1, 0.92]);
+  }
+
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(null);
 }
 
 // ============================================================
