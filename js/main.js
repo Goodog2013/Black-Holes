@@ -84,20 +84,22 @@ const mainP = makeProgram(FRAG_SRC, [
   'uRes','uTime','uCamPos','uCamMat','uFov','uNumBH','uDiskOn','uDiskIn','uDiskOut',
   'uDiskTemp','uDiskBright','uDiskBoost','uObjCount','uFlash','uRippleT','uSteps','uDetail',
   'uStretchIdx','uStretch','uErgo','uEchoPos','uEchoR','uEchoStr','uAccN','uFallV','uFlat',
+  'uXR','uXRTan',
   'uBHPos[0]','uBHRs[0]','uBHSpin[0]','uObjPos[0]','uObjCol[0]','uAccWave[0]',
 ]);
 const brightP = makeProgram(BRIGHT_SRC, ['uTex', 'uRes']);
 const blurP = makeProgram(BLUR_SRC, ['uTex', 'uRes', 'uDir']);
-const compP = makeProgram(COMPOSITE_SRC, ['uScene', 'uBloom1', 'uBloom2', 'uRes', 'uTime', 'uExposure', 'uHelmet', 'uEngulf']);
+const compP = makeProgram(COMPOSITE_SRC, ['uScene', 'uBloom1', 'uBloom2', 'uRes', 'uTime', 'uExposure', 'uHelmet', 'uEngulf', 'uVp', 'uXR']);
 const psimP = HDR ? makeProgram(PSIM_SRC, [
   'uPosTex','uVelTex','uDt','uDtReal','uTime','uBHPosP','uDiskInR',
   'uEmit','uEmitDir','uEmitVel','uEmitLen','uEmitProb','uEmitTemp','uJetProb',
 ]) : null;
 const pdrawP = HDR ? makeProgram(PFRAG_SRC, [
   'uPosTex','uVelTex','uTexSize','uCamPos','uCamMat','uFov','uRes','uBHPosP','uBHPosV','uOcc',
+  'uXR','uXRTan',
 ], PVERT_SRC) : null;
 const trailP = makeProgram(TRAILFRAG_SRC, [
-  'uCamPos','uCamMat','uFov','uRes','uCol','uBright','uBHPosT',
+  'uCamPos','uCamMat','uFov','uRes','uCol','uBright','uBHPosT','uXR','uXRTan',
 ], TRAILVERT_SRC);
 const U = mainP.u;
 U.uBHPos = U['uBHPos[0]'];
@@ -118,6 +120,13 @@ gl.bindVertexArray(null);
 
 // рендер-цели
 let RT = null;
+
+// ---- состояние WebXR (VR-шлем): заполняется в xrFrame ----
+const xr = { session: null, refSpace: null, layer: null, rt: null, savedQ: null, btn: {} };
+let xrCam = null;                     // базис глаза на время рендера (подменяет камеру)
+let xrTan = [0, 0, 0, 0];             // тангенсы фрустума глаза (left, right, bottom, top)
+let xrEye = 0;                        // 0 — левый глаз (шагает симуляции), 1 — правый
+const xrOut = { fb: null, vp: null }; // куда рисует финальный композит вместо канваса
 function makeTarget(w, h) {
   const tex = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -139,6 +148,18 @@ function destroyTarget(t) {
   gl.deleteFramebuffer(t.fbo);
 }
 
+function makeRTSet(W, H) {
+  const hw = Math.max(2, W >> 1), hh = Math.max(2, H >> 1);
+  const qw = Math.max(2, W >> 2), qh = Math.max(2, H >> 2);
+  return {
+    scene: makeTarget(W, H),
+    halfA: makeTarget(hw, hh),
+    halfB: makeTarget(hw, hh),
+    quartA: makeTarget(qw, qh),
+    quartB: makeTarget(qw, qh),
+  };
+}
+
 function resize() {
   const dpr = Math.min(Math.min(window.devicePixelRatio || 1, 2) * quality.scale, quality.cap || 2.2);
   // не превышаем максимальный размер текстуры GPU (актуально для «Почему?...»)
@@ -147,16 +168,7 @@ function resize() {
   canvas.width = Math.round(innerWidth * dpr * fit);
   canvas.height = Math.round(innerHeight * dpr * fit);
   if (RT) Object.values(RT).forEach(destroyTarget);
-  const W = canvas.width, H = canvas.height;
-  const hw = Math.max(2, W >> 1), hh = Math.max(2, H >> 1);
-  const qw = Math.max(2, W >> 2), qh = Math.max(2, H >> 2);
-  RT = {
-    scene: makeTarget(W, H),
-    halfA: makeTarget(hw, hh),
-    halfB: makeTarget(hw, hh),
-    quartA: makeTarget(qw, qh),
-    quartB: makeTarget(qw, qh),
-  };
+  RT = makeRTSet(canvas.width, canvas.height);
 }
 window.addEventListener('resize', resize);
 
@@ -242,6 +254,8 @@ function drawParticles(cv, bhScene) {
   ]);
   gl.uniform1f(u.uFov, cam.fov);
   gl.uniform2f(u.uRes, RT.scene.w, RT.scene.h);
+  gl.uniform1i(u.uXR, xrCam ? 1 : 0);
+  gl.uniform4f(u.uXRTan, xrTan[0], xrTan[1], xrTan[2], xrTan[3]);
   gl.uniform3f(u.uBHPosP, bhScene[0], bhScene[1], bhScene[2]);
   gl.uniform3f(u.uBHPosV, bhScene[0], bhScene[1], bhScene[2]);
   if (emitter && emitter.prob < 0.3) {
@@ -273,6 +287,8 @@ function drawTrails(cv, bhScene) {
   ]);
   gl.uniform1f(u.uFov, cam.fov);
   gl.uniform2f(u.uRes, RT.scene.w, RT.scene.h);
+  gl.uniform1i(u.uXR, xrCam ? 1 : 0);
+  gl.uniform4f(u.uXRTan, xrTan[0], xrTan[1], xrTan[2], xrTan[3]);
   gl.uniform3f(u.uBHPosT, bhScene[0], bhScene[1], bhScene[2]);
   gl.bindVertexArray(trailVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, trailVBO);
@@ -316,6 +332,8 @@ function beginLinePass(cv, bhScene) {
   ]);
   gl.uniform1f(u.uFov, cam.fov);
   gl.uniform2f(u.uRes, RT.scene.w, RT.scene.h);
+  gl.uniform1i(u.uXR, xrCam ? 1 : 0);
+  gl.uniform4f(u.uXRTan, xrTan[0], xrTan[1], xrTan[2], xrTan[3]);
   gl.uniform3f(u.uBHPosT, bhScene[0], bhScene[1], bhScene[2]);
   gl.bindVertexArray(trailVAO);
   gl.bindBuffer(gl.ARRAY_BUFFER, trailVBO);
@@ -403,14 +421,17 @@ function drawPulsarBeams(cv, bhScene) {
   endLinePass();
 }
 
-// вспомогательный полноэкранный проход
+// вспомогательный полноэкранный проход; без target рисует на экран
+// либо (в VR) во вьюпорт глаза внутри XR-фреймбуфера
 function pass(p, target, setup) {
-  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : null);
-  const w = target ? target.w : canvas.width;
-  const h = target ? target.h : canvas.height;
-  gl.viewport(0, 0, w, h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target ? target.fbo : xrOut.fb);
+  let x = 0, y = 0, w, h;
+  if (target) { w = target.w; h = target.h; }
+  else if (xrOut.vp) { [x, y, w, h] = xrOut.vp; }
+  else { w = canvas.width; h = canvas.height; }
+  gl.viewport(x, y, w, h);
   gl.useProgram(p.prog);
-  setup(p.u, w, h);
+  setup(p.u, w, h, x, y);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function bindTex(unit, tex, loc) {
@@ -847,6 +868,8 @@ let horizonPlaying = false;
 function enterHorizon() {
   if (horizonPlaying) return;
   horizonPlaying = true;
+  // видео-финал двухмерный: VR-сессию завершаем, шлем покажет браузер
+  if (xr.session) xr.session.end();
   stopBreathing(); // звуки скафандра умолкают — дальше говорит видео
   const vid = document.getElementById('horizon-video');
   const finish = () => {
@@ -961,9 +984,13 @@ const flyCam = { pos: [0, 6, 26], yaw: Math.PI, pitch: -0.2, speed: 6 };
 const gyro = { yaw0: null, yaw: 0, pitch: 0 };
 
 function cameraVectors() {
+  // VR: на время рендера глаза базис задаёт поза шлема
+  if (xrCam) return xrCam;
   if (camMode.fly || camMode.imm) {
-    const yaw = flyCam.yaw + (camMode.imm ? gyro.yaw : 0);
-    const pitch = Math.max(-1.5, Math.min(1.5, flyCam.pitch + (camMode.imm ? gyro.pitch : 0)));
+    // в VR головой вертит сам шлем (поза XR) — гироскоп телефона не подмешиваем
+    const useGyro = camMode.imm && !xr.session;
+    const yaw = flyCam.yaw + (useGyro ? gyro.yaw : 0);
+    const pitch = Math.max(-1.5, Math.min(1.5, flyCam.pitch + (useGyro ? gyro.pitch : 0)));
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
     const fwd = [cp * sy, sp, cp * cy];
@@ -1642,6 +1669,14 @@ function setupUI() {
   el('lang-btn').onclick = () => setLang(LANG === 'ru' ? 'en' : 'ru');
   applyStaticLang();
 
+  // VR (WebXR): кнопка появляется, только если шлем действительно доступен
+  if (navigator.xr && navigator.xr.isSessionSupported) {
+    navigator.xr.isSessionSupported('immersive-vr').then(ok => {
+      if (ok) el('vr-btn').style.display = '';
+    }).catch(() => {});
+  }
+  el('vr-btn').onclick = enterVR;
+
   // мобильная раскладка: секции настроек свёрнуты (панель — нижний лист),
   // карточка физики сворачивается тапом по заголовку и стартует свёрнутой
   if (window.matchMedia('(max-width: 760px)').matches) {
@@ -1800,7 +1835,8 @@ function updateInfo(dt) {
 let lastT = performance.now();
 let visT = 0; // визуальное время: замирает на паузе (вращение диска, грануляция)
 let frameN = 0; // счётчик кадров (чередование эмиттеров частиц)
-function frame(now) {
+// физика и состояние — один шаг на кадр (общий для обычного и VR-цикла)
+function tick(now) {
   frameN++;
   // clamp снизу: у первого кадра rAF-таймстамп может быть меньше lastT
   const dtReal = Math.max(0, Math.min((now - lastT) / 1000, 0.05));
@@ -1886,6 +1922,12 @@ function frame(now) {
   }
 
   updateCamera(dtReal);
+  return dtReal;
+}
+
+function frame(now) {
+  if (xr.session) return; // кадры ведёт XR-сессия; вернёмся по её завершении
+  const dtReal = tick(now);
   render(visT);
   saveShotIfNeeded();
   drawGW();
@@ -1903,7 +1945,7 @@ function render(t) {
   gl.viewport(0, 0, RT.scene.w, RT.scene.h);
   gl.useProgram(mainP.prog);
 
-  gl.uniform2f(U.uRes, canvas.width, canvas.height);
+  gl.uniform2f(U.uRes, RT.scene.w, RT.scene.h);
   gl.uniform1f(U.uTime, t);
   gl.uniform3f(U.uCamPos, cv.pos[0], cv.pos[1], cv.pos[2]);
   gl.uniformMatrix3fv(U.uCamMat, false, [
@@ -1912,6 +1954,8 @@ function render(t) {
     cv.fwd[0], cv.fwd[1], cv.fwd[2],
   ]);
   gl.uniform1f(U.uFov, cam.fov);
+  gl.uniform1i(U.uXR, xrCam ? 1 : 0);
+  gl.uniform4f(U.uXRTan, xrTan[0], xrTan[1], xrTan[2], xrTan[3]);
   gl.uniform1i(U.uSteps, quality.steps);
   gl.uniform1i(U.uDetail, quality.detail ? 1 : 0);
 
@@ -2077,7 +2121,8 @@ function render(t) {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   // --- частицы приливного разрушения: симуляция + рендер в сцену ---
-  if (!state.paused) {
+  // (в VR кадр рисуется дважды — на второй глаз симуляцию не шагаем)
+  if (!state.paused && xrEye === 0) {
     const diskInR = Math.max(state.diskIn, iscoRadius(state.spin) * 0.75);
     stepParticles(state._dtReal || 0.016, bhScene, diskInR);
   }
@@ -2124,9 +2169,11 @@ function render(t) {
     });
   }
 
-  // --- композит на экран ---
-  pass(compP, null, (u, w, h) => {
+  // --- композит на экран (в VR — во вьюпорт глаза) ---
+  pass(compP, null, (u, w, h, x, y) => {
     gl.uniform2f(u.uRes, w, h);
+    gl.uniform4f(u.uVp, x, y, w, h);
+    gl.uniform1i(u.uXR, xrCam ? 1 : 0);
     // дизеринг живёт на реальном времени, чтобы не «застывал» на паузе
     gl.uniform1f(u.uTime, performance.now() / 1000);
     gl.uniform1f(u.uExposure, 1.25);
@@ -2134,12 +2181,166 @@ function render(t) {
     const helmetT = camMode.imm && !horizonPlaying ? 1 : 0;
     helmetK += (helmetT - helmetK) * 0.06;
     if (!helmetT && helmetK < 0.003) helmetK = 0;
-    gl.uniform1f(u.uHelmet, helmetK);
+    // в VR дисторсию визора не рисуем: оптика шлема — сама «визор»
+    gl.uniform1f(u.uHelmet, xrCam ? 0 : helmetK);
     gl.uniform1f(u.uEngulf, engulfK);
     bindTex(0, RT.scene.tex, u.uScene);
     bindTex(1, RT.halfA.tex, u.uBloom1);
     bindTex(2, RT.quartA.tex, u.uBloom2);
   });
+}
+
+// ============================================================
+// WebXR: стерео-рендер для VR-шлемов (Quest 2/3/3S, Meta Quest Browser)
+// ============================================================
+// Качество под мобильный GPU шлема: ~40 шагов геодезики в стерео при 72 Гц.
+// scale здесь — доля от рекомендованного разрешения глаза (композит растянет).
+const XR_QUALITY = { steps: 40, scale: 0.75, blur: 1 };
+
+async function enterVR() {
+  if (xr.session) { xr.session.end(); return; }
+  if (!navigator.xr) return;
+  try {
+    const session = await navigator.xr.requestSession('immersive-vr', {
+      optionalFeatures: ['local-floor'],
+    });
+    await gl.makeXRCompatible();
+    xr.layer = new XRWebGLLayer(session, gl, { antialias: false });
+    // фовеация: Quest сильно экономит на периферии кадра
+    if ('fixedFoveation' in xr.layer) xr.layer.fixedFoveation = 1;
+    session.updateRenderState({ baseLayer: xr.layer });
+    xr.refSpace = await session.requestReferenceSpace('local');
+    xr.session = session;
+    xr.savedQ = quality;
+    quality = XR_QUALITY;
+    const btn = document.getElementById('vr-btn');
+    if (btn) btn.classList.add('active');
+    session.addEventListener('end', () => {
+      xr.session = null;
+      if (xr.rt) { Object.values(xr.rt).forEach(destroyTarget); xr.rt = null; }
+      xrCam = null; xrEye = 0;
+      xrOut.fb = null; xrOut.vp = null;
+      if (xr.savedQ) quality = xr.savedQ;
+      if (btn) btn.classList.remove('active');
+      resize();
+      lastT = performance.now();
+      requestAnimationFrame(frame); // возвращаем обычный цикл кадров
+    });
+    session.requestAnimationFrame(xrFrame);
+  } catch (err) {
+    console.warn('WebXR: VR-сессия не запустилась', err);
+  }
+}
+
+// сколько сценических единиц (rs = 1) в одном метре реальной головы:
+// задаёт стереобазу — в погружении дыра огромна, на орбите — «макет» неподалёку
+function xrWorldScale() {
+  if (camMode.imm || camMode.fly) return 0.02;
+  return Math.max(0.01, cam.dist / 30);
+}
+
+// вектор из системы шлема в мир через риг симулятора: +x -> right, +y -> up, -z -> fwd
+function xrRigVec(cv, v) {
+  return [
+    cv.right[0] * v[0] + cv.up[0] * v[1] - cv.fwd[0] * v[2],
+    cv.right[1] * v[0] + cv.up[1] * v[1] - cv.fwd[1] * v[2],
+    cv.right[2] * v[0] + cv.up[2] * v[1] - cv.fwd[2] * v[2],
+  ];
+}
+
+function xrFrame(now, xrf) {
+  const session = xr.session;
+  if (!session) return;
+  session.requestAnimationFrame(xrFrame);
+  tick(now); // физика — один шаг на кадр, глаза делят состояние
+  pollXRInput();
+  const layer = xr.layer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const pose = xrf.getViewerPose(xr.refSpace);
+  if (!pose) return;
+  const rig = cameraVectors(); // куда «смотрит» симулятор (орбита/полёт/погружение)
+  const ws = xrWorldScale();
+  const mainRT = RT;
+  for (let i = 0; i < pose.views.length; i++) {
+    const view = pose.views[i];
+    const vp = layer.getViewport(view);
+    if (!vp || !vp.width) continue;
+    const rw = Math.max(2, Math.round(vp.width * (quality.scale || 1)));
+    const rh = Math.max(2, Math.round(vp.height * (quality.scale || 1)));
+    if (!xr.rt || xr.rt.scene.w !== rw || xr.rt.scene.h !== rh) {
+      if (xr.rt) Object.values(xr.rt).forEach(destroyTarget);
+      xr.rt = makeRTSet(rw, rh);
+    }
+    // асимметричный фрустум глаза: тангенсы из проекционной матрицы XRView
+    const p = view.projectionMatrix;
+    xrTan = [(p[8] - 1) / p[0], (p[8] + 1) / p[0], (p[9] - 1) / p[5], (p[9] + 1) / p[5]];
+    // базис глаза = риг симулятора × поза шлема (столбцы rigid-матрицы)
+    const m = view.transform.matrix;
+    const off = xrRigVec(rig, [m[12], m[13], m[14]]);
+    xrCam = {
+      pos: [rig.pos[0] + off[0] * ws, rig.pos[1] + off[1] * ws, rig.pos[2] + off[2] * ws],
+      right: xrRigVec(rig, [m[0], m[1], m[2]]),
+      up: xrRigVec(rig, [m[4], m[5], m[6]]),
+      fwd: xrRigVec(rig, [-m[8], -m[9], -m[10]]),
+    };
+    xrEye = i;
+    RT = xr.rt; // весь конвейер (raymarch, частицы, bloom) рисует в цели глаза
+    xrOut.fb = layer.framebuffer;
+    xrOut.vp = [vp.x, vp.y, vp.width, vp.height];
+    render(visT);
+  }
+  RT = mainRT;
+  xrCam = null; xrEye = 0;
+  xrOut.fb = null; xrOut.vp = null;
+}
+
+// контроллеры Touch: правый стик — взгляд/орбита, левый — зум (в полёте — ход),
+// курок — заспавнить выбранный объект, squeeze — погружение, A — пауза, B — выход
+function pollXRInput() {
+  if (!xr.session) return;
+  for (const src of xr.session.inputSources) {
+    const gp = src.gamepad;
+    if (!gp) continue;
+    const dz = v => (Math.abs(v || 0) > 0.15 ? v : 0);
+    const sx = dz(gp.axes[2]), sy = dz(gp.axes[3]);
+    if (src.handedness === 'right') {
+      if (camMode.fly || camMode.imm) {
+        flyCam.yaw -= sx * 0.04;
+        flyCam.pitch = Math.max(-1.5, Math.min(1.5, flyCam.pitch - sy * 0.03));
+      } else {
+        cam.phi += sx * 0.04;
+        cam.theta = Math.max(-1.35, Math.min(1.35, cam.theta + sy * 0.03));
+      }
+    } else if (src.handedness === 'left') {
+      if (camMode.fly && sy) {
+        const cv = cameraVectors();
+        const sp = flyCam.speed * -sy / 72;
+        flyCam.pos[0] += cv.fwd[0] * sp;
+        flyCam.pos[1] += cv.fwd[1] * sp;
+        flyCam.pos[2] += cv.fwd[2] * sp;
+      } else if (!camMode.imm) {
+        cam.distT = Math.max(2.2, Math.min(300, cam.distT * Math.exp(sy * 0.03)));
+      }
+    }
+    const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
+    const h = src.handedness;
+    xrBtnEdge(h + 'trig', b(0), () => el('spawn-btn').onclick());
+    xrBtnEdge(h + 'sq', b(1), () => {
+      if (immersion.active) exitImmersion();
+      else startImmersion(+el('imm-dist').value, +el('imm-speed').value);
+    });
+    xrBtnEdge(h + 'a', b(4), () => {
+      state.paused = !state.paused;
+      el('pause-chk').checked = state.paused;
+    });
+    xrBtnEdge(h + 'b', b(5), () => xr.session && xr.session.end());
+  }
+}
+function xrBtnEdge(k, v, fn) {
+  if (v && !xr.btn[k]) fn();
+  xr.btn[k] = v;
 }
 
 // ============================================================

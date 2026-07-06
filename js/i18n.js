@@ -108,6 +108,7 @@ const I18N = {
     sNoSignal: 'СИГНАЛ ПОТЕРЯН',
 
     // кнопки-FAB (title)
+    tVR: 'VR-режим (шлем, WebXR)',
     tImm: 'Погружение — падение в дыру (I)',
     tCine: 'Кинорежим (C)',
     tFly: 'Свободный полёт (F)',
@@ -253,6 +254,7 @@ const I18N = {
     sTidal: 'Tidal',
     sNoSignal: 'SIGNAL LOST',
 
+    tVR: 'VR mode (headset, WebXR)',
     tImm: 'Immersion — fall into the hole (I)',
     tCine: 'Cinema mode (C)',
     tFly: 'Free flight (F)',

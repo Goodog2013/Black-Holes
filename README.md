@@ -42,7 +42,8 @@ A first-person free fall built to match the NASA/Goddard plunge visualization an
 - near the singularity the tidal aberration **flattens the whole sky into a bright horizontal ring** that narrows and tears — then spaghettification;
 - futuristic **spacesuit HUD**: mission clock, pulse, O₂, suit integrity, tidal g-force and comms signal that honestly dies at the horizon 📡;
 - breathing, fear, alarm, signal-loss and system-failure **sound design**; time speed from ×0.125 to ×1,000,000 (you'll need it for Phoenix A — a 23-year fall!);
-- VR-ish look-around: mouse, swipe, or gyroscope on phones.
+- look-around: mouse, swipe, or gyroscope on phones;
+- 🥽 **real VR via WebXR** (Quest 2/3/3S): stereo rendering of the full raymarched pipeline, head tracking, Touch controllers — right stick orbits, left stick zooms, trigger spawns a star, squeeze starts the plunge.
 
 ### 🎨 Graphics
 
@@ -104,7 +105,8 @@ The physics was verified against published sources — see [`research/blackhole-
 - у сингулярности приливная аберрация **сплющивает всё небо в яркое горизонтальное кольцо**, которое сужается и рвётся — дальше спагеттификация;
 - футуристичный **HUD скафандра**: часы миссии, пульс, O₂, целостность, приливные перегрузки и связь, которая честно умирает на горизонте 📡;
 - дыхание, страх, сирена, потеря сигнала и отказ систем — **звуковой дизайн**; скорость времени от ×0.125 до ×1 000 000 (пригодится для Феникса A — падение длиной 23 года!);
-- осмотр как в VR: мышь, свайп или гироскоп на телефоне.
+- осмотр: мышь, свайп или гироскоп на телефоне;
+- 🥽 **настоящий VR через WebXR** (Quest 2/3/3S): стерео-рендер всего рейтрейс-конвейера, трекинг головы, контроллеры Touch — правый стик крутит орбиту, левый зумит, курок спавнит звезду, squeeze запускает погружение.
 
 ### 🎨 Графика
 
